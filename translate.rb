@@ -39,7 +39,7 @@ def geturl(hash)
           if !row.nil?
               return row.join "\s"
           else
-            return "/"
+            raise ArgumentError.new("Hash: #{hash} was not found to map to anything")
           end
         end
 end
