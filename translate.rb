@@ -4,37 +4,44 @@ require 'digest/sha1'
 
 $dbfile = 'lilurl.db'
 
+#makes a db and cleans it up, takes in a block with a single parameter which is the db
 def usingDb(dbName)
-        db = SQLite3::Database.open dbName
-        yield db
-    ensure
-        db.close if urldb
+    begin
+            db = SQLite3::Database.open dbName
+            yield db
+        rescue SQLite3::Exception => e
+            puts "an error occurred: " + e
+        ensure
+            db.close if db
+    end
 end
 
+#makes a statement and cleans it up, takes in a block with a single parameter which is the statement
+#should be nested in the above usingdb
+#currently unused
 def usingStatement(db,sql)
-  #ensure table exists
-  usingStatement(db, "CREATE TABLE IF NOT EXISTS urls(hash varchar(20) primary key, url varchar(300))") 
+    begin
         statement = db.prepare sql
-    if block_given?
-        yield statement
-    else
-        statement execute
+        if block_given?
+            yield statement
+        else
+            statement.execute
+        end
+
+        ensure
+            statement.close if statement
     end
-    ensure
-        statement.close
 end
 
 def geturl(hash)
   usingDb($dbfile) do |db|
-      usingStatement(db,"SELECT url FROM urls WHERE hash = ?") do |statement|
-          row = statement get_first_row hash
+      row = db.get_first_row("SELECT url FROM urls WHERE hash = ?", hash)
           if !row.nil?
               return row.join "\s"
           else
             return "/"
           end
         end
-    end
 end
 
 def makeurl(oldurl, postfix = nil)
@@ -55,23 +62,22 @@ def makeurl(oldurl, postfix = nil)
   end
 
   usingDb($dbfile) do |db|
+      db.execute("CREATE TABLE IF NOT EXISTS urls(hash varchar(20) primary key, url varchar(300))")
       #check and see if the hash is unique
-      usingStatement(db, "SELECT hash FROM urls WHERE hash = ?") do |statement| 
-          # column hash is not unique
-          # 1) URL already exists in the database and will hash to the same index
-          # 2) someone already tried to use that postfix
-          row = statement get_first_row hash 
-          if !row.nil? and !postfix.empty?
+      row = db.get_first_row("SELECT hash FROM urls WHERE hash = ?",hash)
+      if !row.nil? 
+              # column hash is not unique
+              # 1) URL already exists in the database and will hash to the same index
+              # 2) someone already tried to use that postfix
+          if !postfix.empty?
               raise ArgumentError.new('That postfix has already been taken. Please use a different one or let me generate one.')
           else
+            #repeat url
             return hash
           end
       end
-
       #hash is unique, insert
-      usingStatement(db, "INSERT INTO urls VALUES (?,?)") do |statement|
-        response = statement.execute hash, oldurl
-         return hash
-      end
+      db.execute("INSERT INTO urls VALUES (?,?)", hash, oldurl)
+      return hash
   end
 end
