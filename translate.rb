@@ -4,25 +4,46 @@ require 'digest/sha1'
 
 $dbfile = 'lilurl.db'
 
+def usingDb(dbName)
+        db = SQLite3::Database.open dbName
+        yield db
+    ensure
+        db.close if urldb
+end
+
+def usingStatement(db,sql)
+  #ensure table exists
+  usingStatement(db, "CREATE TABLE IF NOT EXISTS urls(hash varchar(20) primary key, url varchar(300))") 
+        statement = db.prepare sql
+    if block_given?
+        yield statement
+    else
+        statement execute
+    end
+    ensure
+        statement.close
+end
+
 def geturl(hash)
-  urldb = SQLite3::Database.open $dbfile
-  statement = urldb.prepare "SELECT url FROM urls WHERE hash = ?"
-  statement.bind_param 1, hash
-  response = statement.execute
-  row = response.next # since hash is a primary key this query should only return one result
-  return row.join "\s"
-rescue SQLite3::Exception => e
-  puts "An error occured: " + e
-ensure
-  statement.close if statement
-  urldb.close if urldb
+  usingDb($dbfile) do |db|
+      usingStatement(db,"SELECT url FROM urls WHERE hash = ?") do |statement|
+          row = statement get_first_row hash
+          if !row.nil?
+              return row.join "\s"
+          else
+            return "/"
+          end
+        end
+    end
 end
 
 def makeurl(oldurl, postfix = nil)
   # error check oldurl
-  if (!(oldurl =~ /^http:\/\//) and !(oldurl =~ /^https:\/\//)) or oldurl.nil?
+  if !(oldurl =~ %r"^https?://") or oldurl.nil?
     raise ArgumentError.new('Please submit a valid HTTP URL.')
   end
+
+  #prep hash
   if !postfix.empty?
     if postfix.length > 20
       raise ArgumentError.new('Your postfix must be 20 characters or less.')
@@ -32,37 +53,25 @@ def makeurl(oldurl, postfix = nil)
     hash = Digest::SHA1.hexdigest oldurl
     hash = hash[0..5]
   end
-  urldb = SQLite3::Database.open $dbfile
-  urldb.execute "CREATE TABLE IF NOT EXISTS urls(hash varchar(20) primary key, url varchar(300))"
-  statement = urldb.prepare "INSERT INTO urls VALUES (?, ?)"
-  statement.bind_param 1, hash
-  statement.bind_param 2, oldurl
-  response = statement.execute
-  statement.close if statement
-  urldb.close if urldb
-  return hash
-rescue SQLite3::ConstraintException => e
-  # column hash is not unique
-  # 1) URL already exists in the database and will hash to the same index
-  # 2) someone already tried to use that postfix
 
-  # First, see if the postfix was set and is already in there
-  if !postfix.empty?
-    statement = urldb.prepare "SELECT hash FROM urls WHERE hash = ?"
-    statement.bind_param 1, postfix
-    response = statement.execute
-    row = response.next
-    statement.close if statement
-    if !row.nil? # returned at least one row
-      raise ArgumentError.new('That postfix has already been taken. Please use a different one or let me generate one.')
-    end
-  # If not, then we must be seeing a duplicate URL that hashed to the same id.
-  else
-    puts "postfix nil, must be duplicate url"
-    return hash
+  usingDb($dbfile) do |db|
+      #check and see if the hash is unique
+      usingStatement(db, "SELECT hash FROM urls WHERE hash = ?") do |statement| 
+          # column hash is not unique
+          # 1) URL already exists in the database and will hash to the same index
+          # 2) someone already tried to use that postfix
+          row = statement get_first_row hash 
+          if !row.nil? and !postfix.empty?
+              raise ArgumentError.new('That postfix has already been taken. Please use a different one or let me generate one.')
+          else
+            return hash
+          end
+      end
+
+      #hash is unique, insert
+      usingStatement(db, "INSERT INTO urls VALUES (?,?)") do |statement|
+        response = statement.execute hash, oldurl
+         return hash
+      end
   end
-rescue SQLite3::Exception => e
-  statement.close if statement
-  urldb.close if urldb
-  raise SQLite3::Exception.new(e.to_s)
 end
